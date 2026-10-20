@@ -77,9 +77,29 @@ async function unfurl(url: string): Promise<UnfurlResult | undefined> {
 	}
 }
 
+// Quote embeds are hydrated through Shim /h/{fullHash} (message embeds carry
+// the full hash). Hydrated quotes map through toCastData, which provides the
+// author.pfp the bundle reads unguarded. Hydration failure drops the quote —
+// old casts get pruned from Snapchain when storage lapses.
+async function fetchQuote(hash: string): Promise<ShimCast | undefined> {
+	try {
+		const res = await fetch(`https://shim.artlu.xyz/h/${hash}`, {
+			signal: AbortSignal.timeout(5000),
+		});
+		if (!res.ok) return undefined;
+		const data = (await res.json().catch(() => undefined)) as {
+			cast?: ShimCast;
+		};
+		return data?.cast ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function toCastData(
 	cast: ShimCast,
 	unfurled?: Map<string, UnfurlResult | undefined>,
+	quotes?: Array<ShimCast | undefined>,
 ): CastData {
 	const images: Array<{
 		type: string;
@@ -99,6 +119,11 @@ function toCastData(
 			});
 		}
 	}
+	const quoteCasts: CastData[] = [];
+	for (const quote of quotes ?? []) {
+		// Recursion depth 1: hydrated quotes render without their own quotes.
+		if (quote?.hash) quoteCasts.push(toCastData(quote));
+	}
 	// The embed bundle reads e.recasts.count and e.tags.length unguarded, and
 	// Shim's message data carries no engagement counts — stub them with zeros.
 	return {
@@ -112,7 +137,7 @@ function toCastData(
 			pfp: { url: cast.user?.pfpUrl },
 			profile: cast.user?.bio ? { bio: { text: cast.user.bio } } : undefined,
 		},
-		embeds: { images, urls },
+		embeds: { images, urls, casts: quoteCasts },
 		replies: { count: 0 },
 		reactions: { count: 0 },
 		recasts: { count: 0 },
@@ -218,7 +243,8 @@ export async function renderCastPage(
 	}
 
 	if (cast?.hash) {
-		// Enrich up to 3 URL embeds with Open Graph data (fails open).
+		// Enrich up to 3 URL embeds with Open Graph data (fails open) and
+		// hydrate up to 3 quote embeds through Shim /h/{fullHash}.
 		const urlEmbeds = Array.from(
 			new Set(
 				(cast.embeds ?? [])
@@ -226,7 +252,14 @@ export async function renderCastPage(
 					.filter((u): u is string => typeof u === "string" && !isImageUrl(u)),
 			),
 		).slice(0, 3);
+		const quoteHashes = (cast.embeds ?? [])
+			.map((embed) => embed.castId?.hash)
+			.filter((h): h is string => typeof h === "string")
+			.slice(0, 3);
 		const unfurls = Promise.allSettled(urlEmbeds.map((u) => unfurl(u)));
+		const quoteFetches = Promise.allSettled(
+			quoteHashes.map((h) => fetchQuote(h)),
+		);
 
 		// Has the author signed the social smart contract? Unknown (null)
 		// fails open: the farcaster.xyz link is shown unless Shim says no.
@@ -252,12 +285,16 @@ export async function renderCastPage(
 			const r = unfurlResults[i];
 			unfurlMap.set(u, r.status === "fulfilled" ? r.value : undefined);
 		});
+		const quoteResults = await quoteFetches;
+		const quotes = quoteResults.map((r) =>
+			r.status === "fulfilled" ? r.value : undefined,
+		);
 		try {
 			const cardHtml = renderToString(
 				(await FarcasterEmbed({
 					username,
 					hash,
-					castData: toCastData(cast, unfurlMap),
+					castData: toCastData(cast, unfurlMap, quotes),
 				})) as never,
 			);
 			return {

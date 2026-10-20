@@ -53,7 +53,25 @@ const ARTLU_CAST = {
 	embeds: [{ url: "https://example.com/article" }],
 };
 // fid with no /signed mock: its signed-check fetch throws (fail-open path).
-const UNKNOWN_SIGNED_CAST = { ...SHIM_CAST, fid: 7777777 };
+// Its quote embed has no /h mock either: hydration fails, quote is dropped.
+const UNKNOWN_SIGNED_CAST = {
+	...SHIM_CAST,
+	fid: 7777777,
+	embeds: [{ castId: { fid: 3854, hash: "0x11111111deadbeef" } }],
+};
+// The cast quoted by /zoo/0x79794547 (hydration via /h/{fullHash}).
+const QUOTED_CAST = {
+	fid: 3854,
+	hash: "0xa7c5f47033da848d6d16dac11c61838634a50c23",
+	text: "the original quoted take",
+	timestamp: 1_700_000_000,
+	user: {
+		fid: 3854,
+		username: "quoteduser",
+		displayName: "Quoted User",
+		pfpUrl: "https://img.example.test/q.png",
+	},
+};
 // Regression: the real /zoo/0x79794547 cast — a quote embed + a URL embed.
 // The bundle reads quote.author.pfp.url unguarded; quotes are dropped and
 // URL embeds render as link cards.
@@ -79,6 +97,11 @@ beforeEach(() => {
 		}
 		if (url === "https://shim.artlu.xyz/wc/zoo/0x79794547") {
 			return Response.json({ success: true, cast: QUOTE_URL_CAST });
+		}
+		if (
+			url === "https://shim.artlu.xyz/h/0xa7c5f47033da848d6d16dac11c61838634a50c23"
+		) {
+			return Response.json({ success: true, cast: QUOTED_CAST });
 		}
 		if (
 			url ===
@@ -176,6 +199,9 @@ test("GET /:username/:hash renders quote+url embed casts without crashing", asyn
 	// URL embed enriched via unfurl.
 	expect(body).toContain("Balaji and the Network State");
 	expect(body).toContain("A test description");
+	// Quote embed hydrated via Shim /h.
+	expect(body).toContain("the original quoted take");
+	expect(body).toContain("Quoted User");
 	expect(body).toContain("Open on Farcaster");
 });
 
