@@ -34,6 +34,23 @@ function isImageUrl(url: string): boolean {
 	);
 }
 
+// Quote embeds are dropped, not rendered: the bundle reads
+// quote.author.pfp.url unguarded and Shim's message-level embeds carry no
+// hydrated author data, so any quote card would either crash the page or
+// render as an empty shell. URL embeds render as link cards via openGraph.
+function urlOpenGraph(url: string): {
+	url: string;
+	domain: string;
+	title: string;
+} {
+	try {
+		const parsed = new URL(url);
+		return { url, domain: parsed.hostname, title: parsed.hostname };
+	} catch {
+		return { url, domain: "", title: "" };
+	}
+}
+
 function toCastData(cast: ShimCast): CastData {
 	const images: Array<{
 		type: string;
@@ -41,15 +58,13 @@ function toCastData(cast: ShimCast): CastData {
 		sourceUrl: string;
 		alt: string;
 	}> = [];
-	const urls: Array<{ type: string }> = [];
-	const quotes: CastData[] = [];
+	const urls: Array<{ type: string; openGraph: Record<string, string> }> = [];
 	for (const embed of cast.embeds ?? []) {
-		if (embed.castId?.hash) {
-			quotes.push({ hash: embed.castId.hash, author: { fid: embed.castId.fid } });
-		} else if (embed.url && isImageUrl(embed.url)) {
+		if (embed.castId?.hash) continue;
+		if (embed.url && isImageUrl(embed.url)) {
 			images.push({ type: "image", url: embed.url, sourceUrl: embed.url, alt: "" });
 		} else if (embed.url) {
-			urls.push({ type: "url" });
+			urls.push({ type: "url", openGraph: urlOpenGraph(embed.url) });
 		}
 	}
 	// The embed bundle reads e.recasts.count and e.tags.length unguarded, and
@@ -65,7 +80,7 @@ function toCastData(cast: ShimCast): CastData {
 			pfp: { url: cast.user?.pfpUrl },
 			profile: cast.user?.bio ? { bio: { text: cast.user.bio } } : undefined,
 		},
-		embeds: { images, urls, casts: quotes },
+		embeds: { images, urls },
 		replies: { count: 0 },
 		reactions: { count: 0 },
 		recasts: { count: 0 },

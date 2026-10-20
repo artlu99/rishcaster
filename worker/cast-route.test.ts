@@ -49,6 +49,19 @@ const originalFetch = globalThis.fetch;
 const ARTLU_CAST = { ...SHIM_CAST, fid: 3319217 };
 // fid with no /signed mock: its signed-check fetch throws (fail-open path).
 const UNKNOWN_SIGNED_CAST = { ...SHIM_CAST, fid: 7777777 };
+// Regression: the real /zoo/0x79794547 cast — a quote embed + a URL embed.
+// The bundle reads quote.author.pfp.url unguarded; quotes are dropped and
+// URL embeds render as link cards.
+const QUOTE_URL_CAST = {
+	...SHIM_CAST,
+	hash: "0x797945472e1ed7dfe53da94c03ad972ef7fc5fd4",
+	embeds: [
+		{ castId: { fid: 3854, hash: "0xa7c5f47033da848d6d16dac11c61838634a50c23" } },
+		{
+			url: "https://newrepublic.com/article/180487/balaji-srinivasan-network-state-plutocrat",
+		},
+	],
+};
 
 beforeEach(() => {
 	globalThis.fetch = mock(async (input: RequestInfo | URL) => {
@@ -58,6 +71,9 @@ beforeEach(() => {
 		}
 		if (url === "https://shim.artlu.xyz/wc/zoo/0x11111111") {
 			return Response.json({ success: true, cast: UNKNOWN_SIGNED_CAST });
+		}
+		if (url === "https://shim.artlu.xyz/wc/zoo/0x79794547") {
+			return Response.json({ success: true, cast: QUOTE_URL_CAST });
 		}
 		if (url === "https://shim.artlu.xyz/signed/10215") {
 			return Response.json({ success: true, signed: true });
@@ -131,6 +147,16 @@ test("GET /:username/:hash fails open when the signed-check is unavailable", asy
 	expect(body).toContain("Open on Farcaster");
 	expect(body).toContain("https://farcaster.xyz/zoo/0x11111111");
 	expect(body).not.toContain("social smart contract");
+});
+
+test("GET /:username/:hash renders quote+url embed casts without crashing", async () => {
+	const res = await app.request("/zoo/0x79794547");
+	expect(res.status).toBe(200);
+
+	const body = await res.text();
+	expect(body).not.toContain("temporarily unavailable");
+	expect(body).toContain("newrepublic.com");
+	expect(body).toContain("Open on Farcaster");
 });
 
 test("GET /:username/:hash returns 404 when Shim reports no such cast", async () => {
