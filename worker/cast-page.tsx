@@ -62,12 +62,32 @@ type UnfurlResult = {
 	ogImage?: Array<{ url?: string } | string>;
 };
 
-async function unfurl(url: string): Promise<UnfurlResult | undefined> {
+async function unfurl(
+	url: string,
+	env?: { UNFURL?: Fetcher },
+): Promise<UnfurlResult | undefined> {
+	// In production, a Worker fetching another workers.dev Worker on the same
+	// account is blocked (Cloudflare error 1042) — the UNFURL service binding
+	// is the sanctioned path. Local dev/tests have no live binding, so after
+	// a binding failure we fall back to plain fetch, which is not subject to
+	// that restriction.
+	const target = `https://unfurl.artlu.workers.dev/?u=${encodeURIComponent(url)}`;
+	if (env?.UNFURL) {
+		try {
+			const res = await env.UNFURL.fetch(target, {
+				signal: AbortSignal.timeout(5000),
+			});
+			if (res.ok) {
+				return (await res.json().catch(() => undefined)) as
+					| UnfurlResult
+					| undefined;
+			}
+		} catch {
+			// Binding unavailable (e.g. local dev) — fall through.
+		}
+	}
 	try {
-		const res = await fetch(
-			`https://unfurl.artlu.workers.dev/?u=${encodeURIComponent(url)}`,
-			{ signal: AbortSignal.timeout(5000) },
-		);
+		const res = await fetch(target, { signal: AbortSignal.timeout(5000) });
 		if (!res.ok) return undefined;
 		return (await res.json().catch(() => undefined)) as
 			| UnfurlResult
@@ -279,6 +299,7 @@ function notFoundPage(username: string, hash: string): string {
 export async function renderCastPage(
 	username: string,
 	hash: string,
+	env?: { UNFURL?: Fetcher },
 ): Promise<{ status: 200 | 404; html: string }> {
 	let reached = false;
 	let cast: ShimCast | null = null;
@@ -309,7 +330,9 @@ export async function renderCastPage(
 			.map((embed) => embed.castId?.hash)
 			.filter((h): h is string => typeof h === "string")
 			.slice(0, 3);
-		const unfurls = Promise.allSettled(urlEmbeds.map((u) => unfurl(u)));
+		const unfurls = Promise.allSettled(
+			urlEmbeds.map((u) => unfurl(u, env)),
+		);
 		const quoteFetches = Promise.allSettled(
 			quoteHashes.map((h) => fetchQuote(h)),
 		);
