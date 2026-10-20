@@ -221,6 +221,19 @@ test("GET /:username/:hash renders quote+url embed casts without crashing", asyn
 	expect(body).toContain("Open on Farcaster");
 });
 
+test("GET /:username/:hash footer shows the GitHub mark and MIT license", async () => {
+	const res = await app.request(`/zoo/${SHORT_HASH}`);
+	expect(res.status).toBe(200);
+
+	const body = await res.text();
+	const footer = body.slice(body.indexOf('<footer class="site-footer">'));
+	// The GitHub mark comes from the simple-icons dependency (no hand-inlined
+	// SVG), and the wording states the MIT license.
+	expect(footer).toContain("<svg");
+	expect(footer).toContain("MIT");
+	expect(footer).not.toContain(">source<");
+});
+
 test("GET /:username/:hash returns 404 when Shim reports no such cast", async () => {
 	const res = await app.request("/zoo/0xdeadbeef");
 	expect(res.status).toBe(404);
@@ -237,4 +250,134 @@ test("GET /:username/:hash falls back to a link-only page when Shim is unreachab
 	const body = await res.text();
 	expect(body).toContain("https://farcaster.xyz/zoo/0x00000000");
 	expect(body).not.toContain(CAST_TEXT);
+});
+
+// --- Agent JSON variant (?format=json) --------------------------------------
+//
+// ?format=json (and Accept: application/json) serves machine-readable cast
+// data for AI agents. Unlike HTML, JSON uses STRICT statuses: 404 when Shim
+// has no such cast, 503 + Retry-After when Shim is unreachable. Availability-gated
+// fields (note/links/quotes/...) appear ONLY when their data exists.
+
+test("GET /:username/:hash?format=json returns the agent JSON variant", async () => {
+	const res = await app.request(`/zoo/${SHORT_HASH}?format=json`);
+	expect(res.status).toBe(200);
+	expect(res.headers.get("content-type") ?? "").toContain("application/json");
+
+	const body = await res.json();
+	expect(body.author).toEqual({
+		username: "zoo",
+		displayName: "zoo",
+		fid: 10215,
+	});
+	expect(body.text).toBe(CAST_TEXT);
+	// Shim timestamps are unix SECONDS.
+	expect(body.timestamp).toBe(new Date(1_792_425_174 * 1000).toISOString());
+	expect(body.images).toEqual([
+		"https://imagedelivery.net/BXluQx4ige9GuW0Ia56BHw/0eeef320/original",
+	]);
+	expect(body.farcaster).toBe(`https://farcaster.xyz/zoo/${SHORT_HASH}`);
+	// The Firefly link uses the full hash Shim resolved.
+	expect(body.firefly).toBe(
+		`https://firefly.social/post/farcaster/${FULL_HASH}`,
+	);
+	// signed:true + no URL/quote embeds: gated fields stay absent.
+	expect("note" in body).toBe(false);
+	expect("links" in body).toBe(false);
+	expect("quotes" in body).toBe(false);
+});
+
+test("GET ?format=json emits unfurl titles and hydrated quote pointers", async () => {
+	const res = await app.request("/zoo/0x79794547?format=json");
+	expect(res.status).toBe(200);
+
+	const body = await res.json();
+	// URL embed enriched via unfurl: title present.
+	expect(body.links).toEqual([
+		{
+			url: "https://newrepublic.com/article/180487/balaji-srinivasan-network-state-plutocrat",
+			title: "Balaji and the Network State",
+		},
+	]);
+	// Hydrated quote → a rishcaster pointer: request origin + the quoted
+	// cast's username + its FULL hash. Quotes are never dropped.
+	expect(body.quotes).toEqual([
+		"http://localhost/quoteduser/0xa7c5f47033da848d6d16dac11c61838634a50c23",
+	]);
+	// fid 10215 signed:true — no note.
+	expect("note" in body).toBe(false);
+});
+
+test("GET ?format=json notes unsigned authors and degrades unfurl to bare URLs", async () => {
+	const res = await app.request("/decent-artlu/0xbb54368f?format=json");
+	expect(res.status).toBe(200);
+
+	const body = await res.json();
+	// signed:false — the JSON carries a note (exact copy is an
+	// implementation detail; only its presence is contractual).
+	expect(typeof body.note).toBe("string");
+	// No unfurl mock for example.com: bare URL, no title.
+	expect(body.links).toEqual([{ url: "https://example.com/article" }]);
+});
+
+test("GET ?format=json fails open on the signed check and points unhydrated quotes at Firefly", async () => {
+	const res = await app.request("/zoo/0x11111111?format=json");
+	expect(res.status).toBe(200);
+
+	const body = await res.json();
+	// No /signed mock for fid 7777777: the check throws — fail open means
+	// NO note, same as the HTML path.
+	expect("note" in body).toBe(false);
+	// No /h mock for the quoted cast: hydration fails, but the quote
+	// survives as a Firefly pointer built from the embed's castId hash.
+	expect(body.quotes).toEqual([
+		"https://firefly.social/post/farcaster/0x11111111deadbeef",
+	]);
+});
+
+test("GET ?format=json returns 404 with a JSON error when the cast is missing", async () => {
+	const res = await app.request("/zoo/0xdeadbeef?format=json");
+	expect(res.status).toBe(404);
+	expect(res.headers.get("content-type") ?? "").toContain("application/json");
+	expect(await res.json()).toEqual({ error: "cast not found" });
+});
+
+test("GET ?format=json returns 503 + Retry-After when Shim is unreachable", async () => {
+	const res = await app.request("/zoo/0x00000000?format=json");
+	expect(res.status).toBe(503);
+	expect(res.headers.get("retry-after")).toBe("60");
+	expect(await res.json()).toEqual({
+		error: "cast data temporarily unavailable",
+	});
+});
+
+test("Accept: application/json negotiates the JSON variant; */* and text/html stay HTML", async () => {
+	const jsonRes = await app.request(`/zoo/${SHORT_HASH}`, {
+		headers: { Accept: "application/json" },
+	});
+	expect(jsonRes.headers.get("content-type") ?? "").toContain(
+		"application/json",
+	);
+
+	// Browsers and curl send */*: that must stay HTML — only the strict
+	// application/json Accept negotiates JSON.
+	const anyRes = await app.request(`/zoo/${SHORT_HASH}`, {
+		headers: { Accept: "*/*" },
+	});
+	expect(anyRes.headers.get("content-type") ?? "").toContain("text/html");
+
+	const htmlRes = await app.request(`/zoo/${SHORT_HASH}`, {
+		headers: { Accept: "text/html" },
+	});
+	expect(htmlRes.headers.get("content-type") ?? "").toContain("text/html");
+});
+
+test("HTML pages advertise the JSON variant", async () => {
+	const res = await app.request(`/zoo/${SHORT_HASH}`);
+	expect(res.status).toBe(200);
+
+	const body = await res.text();
+	expect(body).toContain(
+		'<link rel="alternate" type="application/json" href="?format=json" />',
+	);
 });

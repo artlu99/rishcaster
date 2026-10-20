@@ -22,6 +22,7 @@
 		"hono": "^4.13.13",
 		"preact": "^11.0.1",
 		"preact-render-to-string": "^6.8.0",
-		"react-farcaster-embed": "^1.11.0"
+		"react-farcaster-embed": "^1.11.0",
+		"simple-icons": "^16.35.0"
 	}
 }

@@ -1,5 +1,6 @@
 import { FarcasterEmbed } from "react-farcaster-embed";
 import { renderToString } from "preact-render-to-string";
+import { siGithub } from "simple-icons";
 
 type CastData = NonNullable<Parameters<typeof FarcasterEmbed>[0]["castData"]>;
 
@@ -307,6 +308,7 @@ function shell(
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>${title}</title>
 ${meta}
+<link rel="alternate" type="application/json" href="?format=json" />
 <link rel="stylesheet" href="/farcaster-embed.css" />
 <style>
 :root {
@@ -390,9 +392,17 @@ main { padding-bottom: 8px; }
   border-top: 1px solid var(--line);
 }
 .site-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--muted);
   text-decoration: none;
+}
+.site-footer svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
 }
 .site-footer a:hover, .site-footer a:focus-visible { color: var(--ink); }
 </style>
@@ -405,7 +415,7 @@ main { padding-bottom: 8px; }
 ${bodyHtml}
 </main>
 <footer class="site-footer">
-  <a href="https://github.com/artlu99/rishcaster">source</a>
+  <a href="https://github.com/artlu99/rishcaster">${siGithub.svg}MIT license</a>
 </footer>
 ${clientScript ?? ""}
 </body>
@@ -460,11 +470,56 @@ function notFoundPage(username: string, hash: string): string {
 	);
 }
 
-export async function renderCastPage(
+// URL embeds destined for unfurl enrichment: deduped, capped at 3.
+// Shared by resolve (which performs the unfurls) and the JSON renderer
+// (which must describe exactly the same list).
+function urlEmbedsOf(cast: ShimCast): string[] {
+	return Array.from(
+		new Set(
+			(cast.embeds ?? [])
+				.map((embed) => embed.url)
+				.filter((u): u is string => typeof u === "string" && !isImageUrl(u)),
+		),
+	).slice(0, 3);
+}
+
+// Quote embeds destined for Shim /h hydration: capped at 3. Same sharing
+// story as urlEmbedsOf: resolve hydrates, the JSON renderer pairs against
+// the results position by position.
+function quoteHashesOf(cast: ShimCast): string[] {
+	return (cast.embeds ?? [])
+		.map((embed) => embed.castId?.hash)
+		.filter((h): h is string => typeof h === "string")
+		.slice(0, 3);
+}
+
+// Image embed URLs in embed order. The HTML renderer uses the first for
+// og:image; the JSON renderer lists all of them.
+function imageUrlsOf(cast: ShimCast): string[] {
+	return (cast.embeds ?? [])
+		.map((embed) => embed.url)
+		.filter((u): u is string => typeof u === "string" && isImageUrl(u));
+}
+
+// Everything both renderers need, fetched once ("resolve once, render
+// twice"). found = Shim reachable and cast resolved; not-found = Shim
+// reachable but no such cast; unreachable = Shim down or non-OK.
+export type ResolvedCast =
+	| {
+			kind: "found";
+			cast: ShimCast & { hash: string };
+			unfurlMap: Map<string, UnfurlResult | undefined>;
+			quotes: Array<ShimCast | undefined>;
+			signed: boolean | null;
+	  }
+	| { kind: "not-found" }
+	| { kind: "unreachable" };
+
+export async function resolveCast(
 	username: string,
 	hash: string,
 	env?: { UNFURL?: Fetcher },
-): Promise<{ status: 200 | 404; html: string }> {
+): Promise<ResolvedCast> {
 	let reached = false;
 	let cast: ShimCast | null = null;
 	try {
@@ -477,23 +532,21 @@ export async function renderCastPage(
 			cast = data.cast ?? null;
 		}
 	} catch {
-		// Shim unreachable — fall through to the link-only page.
+		// Shim unreachable — fall through.
 	}
 
 	if (cast?.hash) {
+		// cast?.hash truthiness narrows `cast` to non-null but keeps
+		// hash: string | undefined — rebuild with the narrowed hash so the
+		// found branch can rely on it (firefly link, hydrated-quote URLs).
+		const foundCast: ShimCast & { hash: string } = {
+			...cast,
+			hash: cast.hash,
+		};
 		// Enrich up to 3 URL embeds with Open Graph data (fails open) and
 		// hydrate up to 3 quote embeds through Shim /h/{fullHash}.
-		const urlEmbeds = Array.from(
-			new Set(
-				(cast.embeds ?? [])
-					.map((embed) => embed.url)
-					.filter((u): u is string => typeof u === "string" && !isImageUrl(u)),
-			),
-		).slice(0, 3);
-		const quoteHashes = (cast.embeds ?? [])
-			.map((embed) => embed.castId?.hash)
-			.filter((h): h is string => typeof h === "string")
-			.slice(0, 3);
+		const urlEmbeds = urlEmbedsOf(foundCast);
+		const quoteHashes = quoteHashesOf(foundCast);
 		const unfurls = Promise.allSettled(
 			urlEmbeds.map((u) => unfurl(u, env)),
 		);
@@ -504,7 +557,7 @@ export async function renderCastPage(
 		// Has the author signed the social smart contract? Unknown (null)
 		// fails open: the farcaster.xyz link is shown unless Shim says no.
 		let signed: boolean | null = null;
-		const fid = cast.fid ?? cast.user?.fid;
+		const fid = foundCast.fid ?? foundCast.user?.fid;
 		if (fid !== undefined) {
 			try {
 				const res = await fetch(`https://shim.artlu.xyz/signed/${fid}`);
@@ -529,56 +582,148 @@ export async function renderCastPage(
 		const quotes = quoteResults.map((r) =>
 			r.status === "fulfilled" ? r.value : undefined,
 		);
-		try {
-			const cardHtml = renderToString(
-				(await FarcasterEmbed({
-					username,
-					hash,
-					castData: toCastData(cast, unfurlMap, quotes),
-				})) as never,
-			).replace(
-				STATS_ROW,
-				() =>
-					`<div class="farcaster-embed-stats" data-username="${escapeHtml(username)}" data-hash="${escapeHtml(hash)}">`,
-			);
-			// OG/Twitter meta so Telegram, Discord, iMessage etc. unfurl the
-			// cast: author handle as title, cast text as description, first
-			// image embed (else the avatar) as image.
-			const handle = cast.user?.username ?? username;
-			const ogTitle = cast.user?.displayName
-				? `${cast.user.displayName} (@${handle})`
-				: `@${handle}`;
-			const firstImage = (cast.embeds ?? [])
-				.map((embed) => embed.url)
-				.find(
-					(u): u is string => typeof u === "string" && isImageUrl(u),
-				);
-			const og = {
-				ogTitle,
-				description: cast.text ? toDescription(cast.text) : undefined,
-				image: firstImage ?? cast.user?.pfpUrl,
-				largeImage: firstImage !== undefined,
-			};
-			return {
-				status: 200,
-				// signed === false is the only hide trigger; unknown fails open.
-				html: castPage(
-					username,
-					hash,
-					cast.hash,
-					cardHtml,
-					signed !== false,
-					og,
-				),
-			};
-		} catch {
-			// Embed rendering failed — degrade to links instead of erroring.
-			return { status: 200, html: linkOnlyPage(username, hash) };
-		}
+		return { kind: "found", cast: foundCast, unfurlMap, quotes, signed };
 	}
 	if (reached) {
 		// Shim answered but has no such cast: genuinely missing or deleted.
+		return { kind: "not-found" };
+	}
+	return { kind: "unreachable" };
+}
+
+// HTML renderer: full SSR card + OG meta when found. Lenient statuses —
+// unreachable still 200s as a link-only page so unfurlers never error.
+export async function renderCastHtml(
+	resolved: ResolvedCast,
+	username: string,
+	hash: string,
+): Promise<{ status: 200 | 404; html: string }> {
+	if (resolved.kind === "not-found") {
 		return { status: 404, html: notFoundPage(username, hash) };
 	}
-	return { status: 200, html: linkOnlyPage(username, hash) };
+	if (resolved.kind === "unreachable") {
+		return { status: 200, html: linkOnlyPage(username, hash) };
+	}
+	const { cast, unfurlMap, quotes, signed } = resolved;
+	try {
+		const cardHtml = renderToString(
+			(await FarcasterEmbed({
+				username,
+				hash,
+				castData: toCastData(cast, unfurlMap, quotes),
+			})) as never,
+		).replace(
+			STATS_ROW,
+			() =>
+				`<div class="farcaster-embed-stats" data-username="${escapeHtml(username)}" data-hash="${escapeHtml(hash)}">`,
+		);
+		// OG/Twitter meta so Telegram, Discord, iMessage etc. unfurl the
+		// cast: author handle as title, cast text as description, first
+		// image embed (else the avatar) as image.
+		const handle = cast.user?.username ?? username;
+		const ogTitle = cast.user?.displayName
+			? `${cast.user.displayName} (@${handle})`
+			: `@${handle}`;
+		const firstImage = imageUrlsOf(cast)[0];
+		const og = {
+			ogTitle,
+			description: cast.text ? toDescription(cast.text) : undefined,
+			image: firstImage ?? cast.user?.pfpUrl,
+			largeImage: firstImage !== undefined,
+		};
+		return {
+			status: 200,
+			// signed === false is the only hide trigger; unknown fails open.
+			html: castPage(
+				username,
+				hash,
+				cast.hash,
+				cardHtml,
+				signed !== false,
+				og,
+			),
+		};
+	} catch {
+		// Embed rendering failed — degrade to links instead of erroring.
+		return { status: 200, html: linkOnlyPage(username, hash) };
+	}
+}
+
+// JSON renderer for AI agents. Deliberately strict where HTML is lenient:
+// not-found is a real 404 and unreachable is 503 + Retry-After, so agents
+// can distinguish "wrong id" from "try again". Found bodies are
+// availability-gated: a key appears only when its data exists.
+export function renderCastJson(
+	resolved: ResolvedCast,
+	username: string,
+	hash: string,
+	origin: string,
+): {
+	status: 200 | 404 | 503;
+	body: Record<string, unknown>;
+	retryAfter?: "60";
+} {
+	if (resolved.kind === "not-found") {
+		return { status: 404, body: { error: "cast not found" } };
+	}
+	if (resolved.kind === "unreachable") {
+		return {
+			status: 503,
+			body: { error: "cast data temporarily unavailable" },
+			retryAfter: "60",
+		};
+	}
+	const { cast, unfurlMap, quotes, signed } = resolved;
+
+	const author: Record<string, unknown> = {
+		username: cast.user?.username ?? username,
+	};
+	if (cast.user?.displayName !== undefined) {
+		author.displayName = cast.user.displayName;
+	}
+	const fid = cast.fid ?? cast.user?.fid;
+	if (fid !== undefined) author.fid = fid;
+
+	const body: Record<string, unknown> = { author };
+	if (cast.timestamp !== undefined) {
+		// Shim timestamps are unix seconds.
+		body.timestamp = new Date(cast.timestamp * 1000).toISOString();
+	}
+	if (cast.text) body.text = cast.text;
+
+	// Image embeds, in embed order, uncapped.
+	const images = imageUrlsOf(cast);
+	if (images.length > 0) body.images = images;
+
+	// The same deduped, capped-at-3 list the HTML path unfurls; a title is
+	// present only when unfurl actually produced one.
+	const links = urlEmbedsOf(cast).map((url) => {
+		const data = unfurlMap.get(url);
+		const title = data?.ogTitle ?? data?.twitterTitle;
+		return title ? { url, title } : { url };
+	});
+	if (links.length > 0) body.links = links;
+
+	// Quotes are never dropped (unlike the HTML card): hydrated quotes map
+	// to rishcaster pointers; hydration failure or a username-less cast
+	// falls back to Firefly via the embed's castId hash.
+	const pointers = quoteHashesOf(cast).map((embedHash, i) => {
+		const quote = quotes[i];
+		if (quote?.user?.username && quote.hash) {
+			return `${origin}/${quote.user.username}/${quote.hash}`;
+		}
+		return `https://firefly.social/post/farcaster/${embedHash}`;
+	});
+	if (pointers.length > 0) body.quotes = pointers;
+
+	body.farcaster = `https://farcaster.xyz/${username}/${hash}`;
+	body.firefly = `https://firefly.social/post/farcaster/${cast.hash}`;
+
+	// signed === false is the only note trigger; unknown/failed fails open.
+	if (signed === false) {
+		body.note =
+			"author hasn't signed the social smart contract; the cast may be restricted on farcaster.xyz";
+	}
+
+	return { status: 200, body };
 }

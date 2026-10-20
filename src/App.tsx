@@ -1,4 +1,5 @@
 import './App.css'
+import { siGithub } from 'simple-icons'
 
 function App() {
   return (
@@ -26,7 +27,13 @@ function App() {
           pages link to Firefly only.
         </p>
         <p className="repo-link">
-          <a href="https://github.com/artlu99/rishcaster">source</a>
+          <a href="https://github.com/artlu99/rishcaster">
+            <span
+              className="repo-mark"
+              dangerouslySetInnerHTML={{ __html: siGithub.svg }}
+            />
+            MIT license
+          </a>
         </p>
       </section>
       <div className="ticks"></div>

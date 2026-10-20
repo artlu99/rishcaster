@@ -23,6 +23,7 @@ Micro-site that mirrors Farcaster cast URLs for sharing without the Farcaster ap
 | Cast data | Shim API | `/wc/{username}/{shortHash}` → full cast; see Mapping below |
 | URL embed cards | unfurl.artlu.workers.dev | called via the `UNFURL` **service binding** (workers.dev→workers.dev fetch is blocked, CF error 1042); `GET /?u={url}` → OG title/description/image (cached, fails open to hostname-only) |
 | Cast embed | react-farcaster-embed | rendering only — `castData` always supplied, never fetches |
+| Live stats | client-side script → farcaster.tv | `LIVE_STATS_SCRIPT` in `cast-page.tsx`; fills the SSR-stripped stats slot from the browser; fails silent (row absent); SSR data path stays Shim-only |
 | SSR | preact-render-to-string | after `await FarcasterEmbed({ castData })` |
 | Bundler | Vite 8 | `@preact/preset-vite` + `@cloudflare/vite-plugin` |
 | Lint | Biome | `bun run lint` |
@@ -65,12 +66,13 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 | --- | --- | --- |
 | `/` | static asset `index.html` | landing SPA |
 | `/api/` | Hono | `{ "name": "Cloudflare" }` |
-| `/:username/:hash` (`0x…`) | Hono SSR | 200 cast card + OG/Twitter meta (title = author handle, description = cast text, image = first image embed or avatar) + farcaster.xyz link + Firefly link (full hash); unsigned author (`/signed/{fid}` false): Firefly link only; 404 when Shim reports no such cast; 200 link-only when Shim is unreachable |
+| `/:username/:hash` (`0x…`) | Hono SSR | HTML: 200 cast card + OG/Twitter meta (title = author handle, description = cast text, image = first image embed or avatar) + farcaster.xyz link + Firefly link (full hash); unsigned author (`/signed/{fid}` false): Firefly link only; 404 when Shim reports no such cast; 200 link-only when Shim is unreachable |
+| `/:username/:hash?format=json` (or `Accept: application/json`) | Hono JSON | Strict-status agent variant — see "Agent JSON variant" below |
 | other missing paths | worker 404 / no SPA fallback | `not_found_handling: none` |
 
 ## Agent JSON variant (`?format=json`)
 
-Decided design — **not yet implemented** (the cast route is HTML-only today). Plan: resolve once (Shim fetch + unfurl + quote hydration + signed check), render twice — HTML for humans, JSON for agents. The return type morphs on the asker.
+**Shipped.** Resolve once (Shim fetch + unfurl + quote hydration + signed check → `resolveCast()`), render twice — `renderCastHtml()` / `renderCastJson()` in `worker/cast-page.tsx`. The return type morphs on the asker.
 
 Negotiation — explicit first, no UA sniffing:
 
@@ -83,7 +85,7 @@ Negotiation — explicit first, no UA sniffing:
 Decisions:
 
 - **JSON only** — no kv/plain-text form (kv is lossy; JSON's token overhead is negligible).
-- **Strict statuses on JSON, lenient on HTML** (deliberate divergence): JSON → 404 when Shim reports no such cast, 503 + `Retry-After` when Shim is unreachable. HTML keeps today's 404 page / 200 link-only page. Agents handle status codes better than rendered fallbacks.
+- **Strict statuses on JSON, lenient on HTML** (deliberate divergence): JSON → 404 when Shim reports no such cast, 503 + `Retry-After: 60` when Shim is unreachable. HTML keeps its 404 page / 200 link-only page. Agents handle status codes better than rendered fallbacks.
 - **Availability-gated payload** — a field appears only when its data exists: author, ISO 8601 timestamp, text, image embed URLs, URL embeds (unfurl title appended when unfurl succeeded, bare URL otherwise), quote embeds, canonical farcaster.xyz + Firefly links.
 - **Quotes are pointers, never dropped**: hydrated quote → rishcaster URL (requires the username from the hydrated cast); hydration failure → Firefly full-hash URL (quote embeds carry `{fid, hash}`, no username). HTML's rendering constraints (unguarded `author.pfp.url`) don't apply to JSON — failed hydration degrades to a URL the agent can fetch.
 - **Ban signal**: `signed: false` emits a short note field; unknown/failed check fails open silently (same semantics as the HTML footer link).
@@ -120,4 +122,4 @@ Shim returns raw Snapchain message data; `toCastData()` in `worker/cast-page.tsx
 
 ## Status
 
-Shim-only data path shipped; farcaster.tv removed. Optional: deploy.
+Shim-only SSR data path; live stats fetched client-side from farcaster.tv (the sole farcaster.tv touchpoint). Agent JSON variant (`?format=json`) shipped. Optional: deploy.

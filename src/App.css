@@ -81,8 +81,17 @@
 }
 
 .repo-link a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--muted);
   text-decoration: none;
+}
+
+.repo-mark svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
 }
 
 .repo-link a:hover,
