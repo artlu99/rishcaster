@@ -162,13 +162,59 @@ function openGraphFor(
 	};
 }
 
-function shell(title: string, bodyHtml: string): string {
+function escapeHtml(s: string): string {
+	return s
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;")
+		.replaceAll("'", "&#39;");
+}
+
+// Collapse newlines/whitespace and truncate for meta description attributes.
+function toDescription(text: string): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > 280 ? `${flat.slice(0, 279)}…` : flat;
+}
+
+function shell(
+	title: string,
+	bodyHtml: string,
+	og?: {
+		ogTitle: string;
+		description?: string;
+		image?: string;
+		largeImage?: boolean;
+	},
+): string {
+	const meta = og
+		? [
+				`<meta property="og:title" content="${escapeHtml(og.ogTitle)}" />`,
+				`<meta name="twitter:card" content="${og.largeImage && og.image ? "summary_large_image" : "summary"}" />`,
+				`<meta name="twitter:title" content="${escapeHtml(og.ogTitle)}" />`,
+				og.description
+					? `<meta property="og:description" content="${escapeHtml(og.description)}" />`
+					: "",
+				og.description
+					? `<meta name="twitter:description" content="${escapeHtml(og.description)}" />`
+					: "",
+				og.image
+					? `<meta property="og:image" content="${escapeHtml(og.image)}" />`
+					: "",
+				og.image
+					? `<meta name="twitter:image" content="${escapeHtml(og.image)}" />`
+					: "",
+			]
+				.filter(Boolean)
+				.join("\n")
+		: "";
 	return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>${title}</title>
+${meta}
 <link rel="stylesheet" href="/farcaster-embed.css" />
 <style>
 body { margin: 0; font-family: system-ui, sans-serif; background: #fff; color: #08060d; }
@@ -191,6 +237,12 @@ function castPage(
 	fullHash: string,
 	cardHtml: string,
 	signed: boolean,
+	og: {
+		ogTitle: string;
+		description?: string;
+		image?: string;
+		largeImage?: boolean;
+	},
 ): string {
 	// signed === false means the author hasn't accepted Farcaster's social
 	// smart contract (Network Code) — their profile is read-only/banned on
@@ -204,6 +256,7 @@ function castPage(
 		`${username}/${hash} · trishcaster`,
 		`${cardHtml}${fcLink}
 <p><a class="cast-link" href="https://firefly.social/post/farcaster/${fullHash}">Open on Firefly</a></p>`,
+		og,
 	);
 }
 
@@ -297,6 +350,24 @@ export async function renderCastPage(
 					castData: toCastData(cast, unfurlMap, quotes),
 				})) as never,
 			);
+			// OG/Twitter meta so Telegram, Discord, iMessage etc. unfurl the
+			// cast: author handle as title, cast text as description, first
+			// image embed (else the avatar) as image.
+			const handle = cast.user?.username ?? username;
+			const ogTitle = cast.user?.displayName
+				? `${cast.user.displayName} (@${handle})`
+				: `@${handle}`;
+			const firstImage = (cast.embeds ?? [])
+				.map((embed) => embed.url)
+				.find(
+					(u): u is string => typeof u === "string" && isImageUrl(u),
+				);
+			const og = {
+				ogTitle,
+				description: cast.text ? toDescription(cast.text) : undefined,
+				image: firstImage ?? cast.user?.pfpUrl,
+				largeImage: firstImage !== undefined,
+			};
 			return {
 				status: 200,
 				// signed === false is the only hide trigger; unknown fails open.
@@ -306,6 +377,7 @@ export async function renderCastPage(
 					cast.hash,
 					cardHtml,
 					signed !== false,
+					og,
 				),
 			};
 		} catch {

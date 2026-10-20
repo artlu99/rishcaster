@@ -152,6 +152,12 @@ test("GET /:username/:hash SSR-renders the cast card from Shim data", async () =
 	expect(body).toContain(`https://farcaster.xyz/zoo/${SHORT_HASH}`);
 	// The Firefly link uses the full hash Shim resolved.
 	expect(body).toContain(`https://firefly.social/post/farcaster/${FULL_HASH}`);
+	// OG/Twitter meta for unfurlers (Telegram, Discord, iMessage).
+	expect(body).toContain('<meta property="og:title" content="zoo (@zoo)" />');
+	expect(body).toContain(
+		`<meta property="og:image" content="https://imagedelivery.net/BXluQx4ige9GuW0Ia56BHw/0eeef320/original" />`,
+	);
+	expect(body).toContain('name="twitter:card" content="summary_large_image"');
 
 	const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
 	expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
