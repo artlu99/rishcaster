@@ -45,11 +45,28 @@ const SHIM_CAST = {
 
 const originalFetch = globalThis.fetch;
 
+// decent-artlu's cast: same data, but fid 3319217 has NOT signed.
+const ARTLU_CAST = { ...SHIM_CAST, fid: 3319217 };
+// fid with no /signed mock: its signed-check fetch throws (fail-open path).
+const UNKNOWN_SIGNED_CAST = { ...SHIM_CAST, fid: 7777777 };
+
 beforeEach(() => {
 	globalThis.fetch = mock(async (input: RequestInfo | URL) => {
 		const url = String(input);
 		if (url === `https://shim.artlu.xyz/wc/zoo/${SHORT_HASH}`) {
 			return Response.json({ success: true, cast: SHIM_CAST });
+		}
+		if (url === "https://shim.artlu.xyz/wc/zoo/0x11111111") {
+			return Response.json({ success: true, cast: UNKNOWN_SIGNED_CAST });
+		}
+		if (url === "https://shim.artlu.xyz/signed/10215") {
+			return Response.json({ success: true, signed: true });
+		}
+		if (url === "https://shim.artlu.xyz/wc/decent-artlu/0xbb54368f") {
+			return Response.json({ success: true, cast: ARTLU_CAST });
+		}
+		if (url === "https://shim.artlu.xyz/signed/3319217") {
+			return Response.json({ success: true, signed: false });
 		}
 		if (url === "https://shim.artlu.xyz/wc/zoo/0xdeadbeef") {
 			return Response.json({ success: false, error: "cast not found" });
@@ -86,6 +103,34 @@ test("GET /:username/:hash SSR-renders the cast card from Shim data", async () =
 	expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
 		`https://shim.artlu.xyz/wc/zoo/${SHORT_HASH}`,
 	);
+});
+
+test("GET /:username/:hash hides the farcaster link when the author has not signed", async () => {
+	const res = await app.request("/decent-artlu/0xbb54368f");
+	expect(res.status).toBe(200);
+
+	const body = await res.text();
+	// The embed still renders for unsigned authors...
+	expect(body).toContain(CAST_TEXT);
+	expect(body).toContain(
+		`https://firefly.social/post/farcaster/${FULL_HASH}`,
+	);
+	// ...but the farcaster.xyz footer link is suppressed.
+	expect(body).not.toContain("Open on Farcaster");
+	expect(body).not.toContain(
+		"https://farcaster.xyz/decent-artlu/0xbb54368f",
+	);
+	expect(body).toContain("social smart contract");
+});
+
+test("GET /:username/:hash fails open when the signed-check is unavailable", async () => {
+	const res = await app.request("/zoo/0x11111111");
+	expect(res.status).toBe(200);
+
+	const body = await res.text();
+	expect(body).toContain("Open on Farcaster");
+	expect(body).toContain("https://farcaster.xyz/zoo/0x11111111");
+	expect(body).not.toContain("social smart contract");
 });
 
 test("GET /:username/:hash returns 404 when Shim reports no such cast", async () => {

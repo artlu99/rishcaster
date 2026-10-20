@@ -10,7 +10,7 @@ Micro-site that mirrors Farcaster cast URLs for sharing without the Farcaster ap
 - Examples: `/zoo/0x895ecc74` and `/decent-artlu/0xbb54368f` → SSR cast card + links
 - Data: Shim (`https://shim.artlu.xyz/wc/{username}/{hash}`) — an owner-run cached reader for the Farcaster Snapchain. One call returns the full cast, full hash included.
 - Missing cast (Shim reports none) → 404 page; Shim unreachable → link-only page (200)
-- Banned accounts render normally: Snapchain keeps signed casts regardless of app-level bans, so there is no ban signal and none is needed. Every cast page links to both farcaster.xyz and `https://firefly.social/post/farcaster/{fullHash}` (Firefly serves banned authors too).
+- Banned accounts: embeds render for everyone — but farcaster.xyz hides unsigned authors. Since Oct 15, 2026 (Network School takeover), accounts must accept the "social smart contract" (Network Code); acceptance is an on-chain access NFT. Shim exposes it: `GET https://shim.artlu.xyz/signed/{fid}` → `{"signed":true|false}`. Unsigned authors: the farcaster.xyz footer link is suppressed and only the Firefly link is shown (the check fails open — unknown state shows the link).
 - farcaster.tv is deliberately not used: unofficial third party, rules unknown. Note that react-farcaster-embed's own default endpoint is farcaster.tv — always pass `castData` so it never fetches.
 
 ## Stack
@@ -64,7 +64,7 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 | --- | --- | --- |
 | `/` | static asset `index.html` | landing SPA |
 | `/api/` | Hono | `{ "name": "Cloudflare" }` |
-| `/:username/:hash` (`0x…`) | Hono SSR | 200 cast card + farcaster.xyz link + Firefly link (full hash); 404 when Shim reports no such cast; 200 link-only when Shim is unreachable |
+| `/:username/:hash` (`0x…`) | Hono SSR | 200 cast card + farcaster.xyz link + Firefly link (full hash); unsigned author (`/signed/{fid}` false): Firefly link only; 404 when Shim reports no such cast; 200 link-only when Shim is unreachable |
 | other missing paths | worker 404 / no SPA fallback | `not_found_handling: none` |
 
 ## Shim → CastData mapping

@@ -4,12 +4,12 @@ import { renderToString } from "preact-render-to-string";
 type CastData = NonNullable<Parameters<typeof FarcasterEmbed>[0]["castData"]>;
 
 // Shim (shim.artlu.xyz) is the sole cast data source: an owner-run caching
-// reader for the Farcaster Snapchain. Snapchain stores signed casts
-// regardless of app-level bans, so banned accounts render here too and no
-// ban signal exists or is needed. farcaster.tv is deliberately not used
-// (unofficial, rules unknown).
+// reader for the Farcaster Snapchain. Snapchain stores casts regardless of
+// app-level bans, so restricted accounts render here too. farcaster.tv is
+// deliberately not used (unofficial, rules unknown).
 type ShimEmbed = { url?: string; castId?: { fid?: number; hash?: string } };
 type ShimCast = {
+	fid?: number;
 	hash?: string;
 	text?: string;
 	/** Unix seconds; the embed does new Date(ts), which wants milliseconds. */
@@ -90,6 +90,7 @@ main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
 <body>
 <main>
 ${bodyHtml}
+<p style="margin-top:24px;font-size:12px;"><a href="https://github.com/artlu99/rishcaster" style="color:#999;text-decoration:none;">source</a></p>
 </main>
 </body>
 </html>`;
@@ -100,10 +101,19 @@ function castPage(
 	hash: string,
 	fullHash: string,
 	cardHtml: string,
+	signed: boolean,
 ): string {
+	// signed === false means the author hasn't accepted Farcaster's social
+	// smart contract (Network Code) — their profile is read-only/banned on
+	// farcaster.xyz, so only the Firefly link is shown. The embed itself
+	// still renders for everyone.
+	const fcLink =
+		signed === false
+			? `<p>The author hasn't signed the social smart contract — the cast may be restricted on farcaster.xyz.</p>`
+			: `<p><a class="cast-link" href="https://farcaster.xyz/${username}/${hash}">Open on Farcaster: ${username}/${hash}</a></p>`;
 	return shell(
 		`${username}/${hash} · trishcaster`,
-		`${cardHtml}<p><a class="cast-link" href="https://farcaster.xyz/${username}/${hash}">Open on Farcaster: ${username}/${hash}</a></p>
+		`${cardHtml}${fcLink}
 <p><a class="cast-link" href="https://firefly.social/post/farcaster/${fullHash}">Open on Firefly</a></p>`,
 	);
 }
@@ -144,6 +154,23 @@ export async function renderCastPage(
 	}
 
 	if (cast?.hash) {
+		// Has the author signed the social smart contract? Unknown (null)
+		// fails open: the farcaster.xyz link is shown unless Shim says no.
+		let signed: boolean | null = null;
+		const fid = cast.fid ?? cast.user?.fid;
+		if (fid !== undefined) {
+			try {
+				const res = await fetch(`https://shim.artlu.xyz/signed/${fid}`);
+				if (res.ok) {
+					const data = (await res.json().catch(() => ({}))) as {
+						signed?: boolean;
+					};
+					if (typeof data.signed === "boolean") signed = data.signed;
+				}
+			} catch {
+				// Signed-check unavailable — fail open.
+			}
+		}
 		try {
 			const cardHtml = renderToString(
 				(await FarcasterEmbed({
@@ -154,7 +181,14 @@ export async function renderCastPage(
 			);
 			return {
 				status: 200,
-				html: castPage(username, hash, cast.hash, cardHtml),
+				// signed === false is the only hide trigger; unknown fails open.
+				html: castPage(
+					username,
+					hash,
+					cast.hash,
+					cardHtml,
+					signed !== false,
+				),
 			};
 		} catch {
 			// Embed rendering failed — degrade to links instead of erroring.
