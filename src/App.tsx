@@ -4,7 +4,7 @@ function App() {
   return (
     <>
       <section id="center">
-        <h1>trishcaster</h1>
+        <h1>rishcaster</h1>
         <p className="lede">
           A tiny micro-site for Farcaster links. Every path like{' '}
           <code>/zoo/0x79794547</code> renders a simple page that points back

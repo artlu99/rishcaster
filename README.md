@@ -6,16 +6,12 @@
 
 Micro-site that mirrors Farcaster cast URLs for sharing without the Farcaster app.
 
-- Pattern: `/{username}/{castHash}` where `castHash` matches `0x[0-9a-fA-F]+`
-- Examples: `/zoo/0x79794547` and `/decent-artlu/0x30102c7a` → SSR cast card + link to `https://farcaster.xyz/{username}/{hash}`
-- Data: worker fetches `https://farcaster.tv/{username}/{hash}`; no usable cast → "may be banned" notice; fetch failure → link-only HTML (both still 200)
-
-## Account types
-
-- **Not banned**: signed an onchain smart contract that granted the address a soulbound NFT. Farcaster APIs return their data.
-- **Banned**: get **no data** from Farcaster APIs — `farcaster.tv` answers with a zero-hash cast (`0x000…000`) or an empty list.
-- Worker signals (`worker/cast-page.tsx`): API reachable but no usable cast → `noDataPage` ("may be banned"); network/HTTP failure → plain link-only page.
-- Onchain ban verification via the soulbound NFT is possible but **not implemented** (needs contract address + chain).
+- Pattern: `/{username}/{castHash}` where `castHash` matches `0x[0-9a-fA-F]+` — short or full form
+- Examples: `/zoo/0x895ecc74` and `/decent-artlu/0xbb54368f` → SSR cast card + links
+- Data: Shim (`https://shim.artlu.xyz/wc/{username}/{hash}`) — an owner-run cached reader for the Farcaster Snapchain. One call returns the full cast, full hash included.
+- Missing cast (Shim reports none) → 404 page; Shim unreachable → link-only page (200)
+- Banned accounts render normally: Snapchain keeps signed casts regardless of app-level bans, so there is no ban signal and none is needed. Every cast page links to both farcaster.xyz and `https://firefly.social/post/farcaster/{fullHash}` (Firefly serves banned authors too).
+- farcaster.tv is deliberately not used: unofficial third party, rules unknown. Note that react-farcaster-embed's own default endpoint is farcaster.tv — always pass `castData` so it never fetches.
 
 ## Stack
 
@@ -24,11 +20,12 @@ Micro-site that mirrors Farcaster cast URLs for sharing without the Farcaster ap
 | Runtime / package mgr | Bun | lockfile: `bun.lock`; scripts use `bun run` |
 | UI (landing) | Preact 11 | SPA assets; entry `src/main.tsx` |
 | Cast pages | Hono on Cloudflare Worker | SSR in `worker/` |
-| Cast embed | react-farcaster-embed | server entry + `castData`; fetch done in worker |
+| Cast data | Shim API | `/wc/{username}/{shortHash}` → full cast; see Mapping below |
+| Cast embed | react-farcaster-embed | rendering only — `castData` always supplied, never fetches |
 | SSR | preact-render-to-string | after `await FarcasterEmbed({ castData })` |
 | Bundler | Vite 8 | `@preact/preset-vite` + `@cloudflare/vite-plugin` |
 | Lint | Biome | `bun run lint` |
-| Typecheck | `bun check` | tsc 7–compatible, built into Bun; no `typescript` pkg |
+| Typecheck | `bun check` | tsc-compatible, built into Bun; no `typescript` pkg |
 | Tests | bun:test | `bun test worker/cast-route.test.ts` |
 
 ## Commands
@@ -55,8 +52,8 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 ├── public/farcaster-embed.css # linked from SSR HTML
 ├── worker/
 │   ├── index.ts               # Hono app; export { app }; default { fetch }
-│   ├── cast-page.tsx          # fetch + SSR embed / link fallback
-│   ├── cast-route.test.ts     # bun:test; mock.module for server-only/react
+│   ├── cast-page.tsx          # Shim fetch → CastData mapping → SSR / 404 / link fallback
+│   ├── cast-route.test.ts     # bun:test; mock.module + exact-URL fetch mock
 │   └── shims/server-only.ts   # empty stub for Next.js marker package
 └── src/                       # landing only (App.tsx)
 ```
@@ -67,14 +64,23 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 | --- | --- | --- |
 | `/` | static asset `index.html` | landing SPA |
 | `/api/` | Hono | `{ "name": "Cloudflare" }` |
-| `/:username/:hash` (`0x…`) | Hono SSR | HTML cast card + farcaster.xyz link; "may be banned" notice when API returns no data |
+| `/:username/:hash` (`0x…`) | Hono SSR | 200 cast card + farcaster.xyz link + Firefly link (full hash); 404 when Shim reports no such cast; 200 link-only when Shim is unreachable |
 | other missing paths | worker 404 / no SPA fallback | `not_found_handling: none` |
+
+## Shim → CastData mapping
+
+Shim returns raw Snapchain message data; `toCastData()` in `worker/cast-page.tsx` adapts it for react-farcaster-embed:
+
+- `timestamp` is unix **seconds** → multiplied by 1000 (the embed does `new Date(ts)`)
+- `embeds` are untyped `{url}` / `{castId}` items → bucketed into `images` / `urls` / `casts`; image heuristic = `imagedelivery.net` host or image extension
+- message-level data has no engagement counts → `replies`/`reactions`/`recasts` stubbed to `{ count: 0 }` and `tags: []` — the embed bundle reads `e.recasts.count` and `e.tags.length` **unguarded** and crashes without them
+- `author` mapped from `user` (`pfpUrl` → `pfp.url`, `bio` → `profile.bio.text`)
 
 ## Conventions for agents
 
 - **Preact, not React** for first-party code. Vite aliases map `react*` → preact for the embed lib.
 - **Cast routing is server-side (Hono)**, not client-side routing.
-- **Tests**: `mock.module("server-only"|react*)` before importing `./index.ts`; mock `globalThis.fetch` for farcaster.tv.
+- **Tests**: `mock.module("server-only"|react*)` before importing `./index.ts`; mock `globalThis.fetch` by exact Shim URL — unexpected URLs throw, which is how fallback paths get tested.
 - **TS worker**: `jsxImportSource: preact`; relative imports need `.tsx` extensions (`nodenext`); tests excluded from `tsconfig.worker.json`.
 - **Secrets**: `.env*` / `.dev.vars*` gitignored.
 
@@ -82,7 +88,7 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 
 | Task | Touch |
 | --- | --- |
-| Cast SSR / fallback | `worker/cast-page.tsx` |
+| Shim fetch / mapping / SSR fallbacks | `worker/cast-page.tsx` |
 | Routes | `worker/index.ts` |
 | Aliases | `vite.config.ts`, `tsconfig.worker.json` paths |
 | Landing | `src/App.tsx` |
@@ -90,4 +96,4 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 
 ## Status
 
-Cast SSR path shipped. Optional: deploy.
+Shim-only data path shipped; farcaster.tv removed. Optional: deploy.

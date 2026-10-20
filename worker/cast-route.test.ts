@@ -1,11 +1,13 @@
 /**
- * Cast route integration tests (TDD RED → GREEN).
+ * Cast route integration tests.
  *
- * Expected worker export contract (worker/index.ts):
+ * worker/index.ts contract:
  *   export const app = new Hono();
  *   export default { fetch: app.fetch };
  *
  * Tests call `app.request(...)`. Cloudflare uses the default export.
+ * Shim (shim.artlu.xyz) is the sole data source; globalThis.fetch is mocked
+ * and routed by exact URL — unexpected URLs throw, exercising fallbacks.
  */
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 
@@ -18,50 +20,26 @@ mock.module("react/jsx-dev-runtime", () => require("preact/jsx-runtime"));
 
 const { app } = await import("./index.ts");
 
-const CAST_TEXT = "Hello from the cast fixture";
+const CAST_TEXT = "omg so relevant!";
+const SHORT_HASH = "0x895ecc74";
+const FULL_HASH = "0x895ecc7415208bfb6105a8cb675f391f19cb9e2c";
 
-const CAST_FIXTURE = {
-	result: {
-		casts: [
-			{
-				hash: "0x895ecc74",
-				author: {
-					username: "zoo",
-					displayName: "Zoo",
-					fid: 2,
-					pfp: { url: "https://example.com/pfp.png" },
-				},
-				text: CAST_TEXT,
-				timestamp: 1_712_000_000_000,
-				replies: { count: 1 },
-				reactions: { count: 3 },
-				recasts: { count: 0 },
-				tags: [],
-				embeds: {},
-			},
-		],
-	},
-};
-
-// Banned accounts get no data from Farcaster APIs: farcaster.tv answers with
-// a single zero-hash cast (or an empty list).
-const ZERO_HASH = "0x0000000000000000000000000000000000000000";
-
-const BANNED_FIXTURE = {
-	result: {
-		casts: [
-			{
-				hash: ZERO_HASH,
-				author: { username: "zoo", displayName: "Zoo", fid: 2 },
-				text: "",
-				timestamp: 0,
-				replies: { count: 0 },
-				reactions: { count: 0 },
-				recasts: { count: 0 },
-				tags: [],
-				embeds: {},
-			},
-		],
+// Shape as returned by shim.artlu.xyz /wc/{username}/{shortHash}:
+// Snapchain message data — unix-SECOND timestamp, raw {url}/{castId} embeds.
+const SHIM_CAST = {
+	fid: 10215,
+	hash: FULL_HASH,
+	text: CAST_TEXT,
+	embeds: [
+		{ url: "https://imagedelivery.net/BXluQx4ige9GuW0Ia56BHw/0eeef320/original" },
+	],
+	timestamp: 1_792_425_174,
+	user: {
+		fid: 10215,
+		username: "zoo",
+		displayName: "zoo",
+		pfpUrl: "https://imagedelivery.net/BXluQx4ige9GuW0Ia56BHw/ab8e1aa9/original",
+		bio: "primus amanuensis @qbase",
 	},
 };
 
@@ -70,14 +48,14 @@ const originalFetch = globalThis.fetch;
 beforeEach(() => {
 	globalThis.fetch = mock(async (input: RequestInfo | URL) => {
 		const url = String(input);
-		if (url === "https://farcaster.tv/zoo/0x895ecc74") {
-			return Response.json(CAST_FIXTURE);
+		if (url === `https://shim.artlu.xyz/wc/zoo/${SHORT_HASH}`) {
+			return Response.json({ success: true, cast: SHIM_CAST });
 		}
-		if (url === "https://farcaster.tv/zoo/0xdeadbeef") {
-			throw new Error("farcaster.tv unavailable");
+		if (url === "https://shim.artlu.xyz/wc/zoo/0xdeadbeef") {
+			return Response.json({ success: false, error: "cast not found" });
 		}
-		if (url === "https://farcaster.tv/zoo/0x00000000") {
-			return Response.json(BANNED_FIXTURE);
+		if (url === "https://shim.artlu.xyz/wc/zoo/0x00000000") {
+			throw new Error("shim unavailable");
 		}
 		throw new Error(`Unexpected fetch in test: ${url}`);
 	}) as typeof fetch;
@@ -93,37 +71,37 @@ test("GET /api/ returns Cloudflare JSON", async () => {
 	expect(await res.json()).toEqual({ name: "Cloudflare" });
 });
 
-test("GET /:username/:hash SSR-renders cast card and farcaster.xyz link", async () => {
-	const res = await app.request("/zoo/0x895ecc74");
+test("GET /:username/:hash SSR-renders the cast card from Shim data", async () => {
+	const res = await app.request(`/zoo/${SHORT_HASH}`);
 	expect(res.status).toBe(200);
 	expect(res.headers.get("content-type") ?? "").toContain("text/html");
 
 	const body = await res.text();
-	expect(body).toContain("https://farcaster.xyz/zoo/0x895ecc74");
 	expect(body).toContain(CAST_TEXT);
+	expect(body).toContain(`https://farcaster.xyz/zoo/${SHORT_HASH}`);
+	// The Firefly link uses the full hash Shim resolved.
+	expect(body).toContain(`https://firefly.social/post/farcaster/${FULL_HASH}`);
 
-	expect(globalThis.fetch).toHaveBeenCalled();
 	const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
-	const calledUrl = String(fetchMock.mock.calls[0]?.[0]);
-	expect(calledUrl).toBe("https://farcaster.tv/zoo/0x895ecc74");
+	expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+		`https://shim.artlu.xyz/wc/zoo/${SHORT_HASH}`,
+	);
 });
 
-test("GET /:username/:hash falls back to link-only HTML when farcaster.tv fails", async () => {
+test("GET /:username/:hash returns 404 when Shim reports no such cast", async () => {
 	const res = await app.request("/zoo/0xdeadbeef");
-	expect(res.status).toBe(200);
-	expect(res.headers.get("content-type") ?? "").toContain("text/html");
+	expect(res.status).toBe(404);
 
 	const body = await res.text();
-	expect(body).toContain("https://farcaster.xyz/zoo/0xdeadbeef");
+	expect(body).toContain("not found");
 	expect(body).not.toContain(CAST_TEXT);
 });
 
-test("GET /:username/:hash says the account may be banned when the API returns no cast data", async () => {
+test("GET /:username/:hash falls back to a link-only page when Shim is unreachable", async () => {
 	const res = await app.request("/zoo/0x00000000");
 	expect(res.status).toBe(200);
 
 	const body = await res.text();
 	expect(body).toContain("https://farcaster.xyz/zoo/0x00000000");
-	expect(body).toContain("banned");
 	expect(body).not.toContain(CAST_TEXT);
 });
