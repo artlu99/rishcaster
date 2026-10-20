@@ -145,7 +145,9 @@ function toCastData(
 		if (quote?.hash) quoteCasts.push(toCastData(quote));
 	}
 	// The embed bundle reads e.recasts.count and e.tags.length unguarded, and
-	// Shim's message data carries no engagement counts — stub them with zeros.
+	// Shim's message data carries no engagement counts — stub them with zeros
+	// so rendering can't crash. The zero-count stats row itself is stripped
+	// from the SSR output after render (STATS_ROW below).
 	return {
 		hash: cast.hash,
 		text: cast.text,
@@ -197,6 +199,75 @@ function toDescription(text: string): string {
 	return flat.length > 280 ? `${flat.slice(0, 279)}…` : flat;
 }
 
+// The bundle renders a replies/recasts/likes row from engagement data the
+// Shim doesn't carry — without the toCastData zero stubs rendering would
+// crash, with them it would always show hardcoded zeros. Strip the row from
+// the SSR output; the Farcaster logo in the same container stays. The stats
+// <ul> is the only <ul> in the card and contains no user text, so matching
+// on the container class is exact. The replacement re-opens the container
+// with data attributes so the client-side live-stats script can find it.
+const STATS_ROW = /(<div class="farcaster-embed-stats">)<ul>[\s\S]*?<\/ul>/;
+
+// Live engagement counts, fetched client-side so the SSR path stays
+// Shim-only and no fake numbers are ever shipped. farcaster.tv (unofficial
+// Warpcast client API) sends access-control-allow-origin: * and answers for
+// unsigned/banned authors too, with exact reply/like/recast counts. Any
+// failure leaves the row absent — stats are decoration, not content. Only
+// the static icons use innerHTML; remote values go through textContent.
+const LIVE_STATS_SCRIPT = `<script>
+(function () {
+  var slot = document.querySelector(".farcaster-embed-stats[data-username]");
+  if (!slot) return;
+  var u = slot.getAttribute("data-username") || "";
+  var h = slot.getAttribute("data-hash") || "";
+  if (!u || !/^0x[0-9a-fA-F]+$/.test(h)) return;
+  fetch("https://farcaster.tv/" + encodeURIComponent(u) + "/" + h)
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) {
+      var casts = j && j.result && j.result.casts;
+      if (!casts) return;
+      var c = null;
+      for (var i = casts.length - 1; i >= 0; i--) {
+        if (casts[i] && typeof casts[i].hash === "string" && casts[i].hash.indexOf(h) === 0) {
+          c = casts[i];
+          break;
+        }
+      }
+      if (!c) return;
+      var replies = c.replies && c.replies.count;
+      var recasts = c.combinedRecastCount != null ? c.combinedRecastCount : c.recasts && c.recasts.count;
+      var likes = c.reactions && c.reactions.count;
+      if (replies == null && recasts == null && likes == null) return;
+      var fmt = function (v) {
+        return typeof v === "number" && isFinite(v) ? v.toLocaleString("en-US") : "0";
+      };
+      var icons = {
+        reply: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>',
+        recast: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2.1l4 4-4 4"></path><path d="M3 12.2v-2a4 4 0 0 1 4-4h12.8M7 21.9l-4-4 4-4"></path><path d="M21 11.8v2a4 4 0 0 1-4 4H4.2"></path></svg>',
+        like: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06 1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>'
+      };
+      var href = "https://farcaster.xyz/" + u + "/" + h;
+      var ul = document.createElement("ul");
+      [[icons.reply, replies], [icons.recast, recasts], [icons.like, likes]].forEach(function (it) {
+        var a = document.createElement("a");
+        a.className = "farcaster-embed-stats-link";
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener";
+        var span = document.createElement("span");
+        span.textContent = fmt(it[1]);
+        a.innerHTML = it[0];
+        a.appendChild(span);
+        var li = document.createElement("li");
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+      slot.insertBefore(ul, slot.firstChild);
+    })
+    .catch(function () {});
+})();
+</script>`;
+
 function shell(
 	title: string,
 	bodyHtml: string,
@@ -206,6 +277,7 @@ function shell(
 		image?: string;
 		largeImage?: boolean;
 	},
+	clientScript?: string,
 ): string {
 	const meta = og
 		? [
@@ -335,6 +407,7 @@ ${bodyHtml}
 <footer class="site-footer">
   <a href="https://github.com/artlu99/rishcaster">source</a>
 </footer>
+${clientScript ?? ""}
 </body>
 </html>`;
 }
@@ -365,6 +438,7 @@ function castPage(
 		`${cardHtml}${fcLink}
 <p class="actions"><a class="pill${signed === false ? " primary" : ""}" href="https://firefly.social/post/farcaster/${fullHash}">Open on Firefly</a></p>`,
 		og,
+		LIVE_STATS_SCRIPT,
 	);
 }
 
@@ -462,6 +536,10 @@ export async function renderCastPage(
 					hash,
 					castData: toCastData(cast, unfurlMap, quotes),
 				})) as never,
+			).replace(
+				STATS_ROW,
+				() =>
+					`<div class="farcaster-embed-stats" data-username="${escapeHtml(username)}" data-hash="${escapeHtml(hash)}">`,
 			);
 			// OG/Twitter meta so Telegram, Discord, iMessage etc. unfurl the
 			// cast: author handle as title, cast text as description, first

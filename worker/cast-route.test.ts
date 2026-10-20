@@ -158,6 +158,16 @@ test("GET /:username/:hash SSR-renders the cast card from Shim data", async () =
 		`<meta property="og:image" content="https://imagedelivery.net/BXluQx4ige9GuW0Ia56BHw/0eeef320/original" />`,
 	);
 	expect(body).toContain('name="twitter:card" content="summary_large_image"');
+	// Engagement counters would be hardcoded zeros (Shim has no counts):
+	// the SSR output ships an empty stats slot + inline script, which fills
+	// the row client-side from farcaster.tv. Nothing rendered in <main>.
+	const card = body.slice(body.indexOf("<main>"), body.indexOf("</main>"));
+	expect(card).not.toContain("farcaster-embed-stats-link");
+	expect(card).not.toContain("<ul>");
+	expect(body).toContain("farcaster-embed-farcaster-link");
+	expect(body).toContain('data-username="zoo"');
+	expect(body).toContain(`data-hash="${SHORT_HASH}"`);
+	expect(body).toContain("https://farcaster.tv/");
 
 	const fetchMock = globalThis.fetch as ReturnType<typeof mock>;
 	expect(String(fetchMock.mock.calls[0]?.[0])).toBe(

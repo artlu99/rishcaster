@@ -11,7 +11,7 @@ Micro-site that mirrors Farcaster cast URLs for sharing without the Farcaster ap
 - Data: Shim (`https://shim.artlu.xyz/wc/{username}/{hash}`) — an owner-run cached reader for the Farcaster Snapchain. One call returns the full cast, full hash included.
 - Missing cast (Shim reports none) → 404 page; Shim unreachable → link-only page (200)
 - Banned accounts: embeds render for everyone — but farcaster.xyz hides unsigned authors. Since Oct 15, 2026 (Network School takeover), accounts must accept the "social smart contract" (Network Code); acceptance is an on-chain access NFT. Shim exposes it: `GET https://shim.artlu.xyz/signed/{fid}` → `{"signed":true|false}`. Unsigned authors: the farcaster.xyz footer link is suppressed and only the Firefly link is shown (the check fails open — unknown state shows the link).
-- farcaster.tv is deliberately not used: unofficial third party, rules unknown. Note that react-farcaster-embed's own default endpoint is farcaster.tv — always pass `castData` so it never fetches.
+- farcaster.tv is deliberately not used for cast data: unofficial third party, rules unknown. react-farcaster-embed's own default endpoint is farcaster.tv — always pass `castData` so it never fetches. Sole exception: the live stats row (replies/recasts/likes) is fetched **client-side** from farcaster.tv — it sends `access-control-allow-origin: *` and answers for unsigned authors too; any failure just leaves the row absent
 
 ## Stack
 
@@ -68,13 +68,36 @@ bun run cf-typegen   # wrangler types → worker-configuration.d.ts
 | `/:username/:hash` (`0x…`) | Hono SSR | 200 cast card + OG/Twitter meta (title = author handle, description = cast text, image = first image embed or avatar) + farcaster.xyz link + Firefly link (full hash); unsigned author (`/signed/{fid}` false): Firefly link only; 404 when Shim reports no such cast; 200 link-only when Shim is unreachable |
 | other missing paths | worker 404 / no SPA fallback | `not_found_handling: none` |
 
+## Agent JSON variant (`?format=json`)
+
+Decided design — **not yet implemented** (the cast route is HTML-only today). Plan: resolve once (Shim fetch + unfurl + quote hydration + signed check), render twice — HTML for humans, JSON for agents. The return type morphs on the asker.
+
+Negotiation — explicit first, no UA sniffing:
+
+| Signal | Response |
+| --- | --- |
+| `?format=json` query param | JSON (documented contract; wins over Accept) |
+| `Accept: application/json` | JSON |
+| anything else (browsers, `*/*`, chat link-preview bots) | HTML |
+
+Decisions:
+
+- **JSON only** — no kv/plain-text form (kv is lossy; JSON's token overhead is negligible).
+- **Strict statuses on JSON, lenient on HTML** (deliberate divergence): JSON → 404 when Shim reports no such cast, 503 + `Retry-After` when Shim is unreachable. HTML keeps today's 404 page / 200 link-only page. Agents handle status codes better than rendered fallbacks.
+- **Availability-gated payload** — a field appears only when its data exists: author, ISO 8601 timestamp, text, image embed URLs, URL embeds (unfurl title appended when unfurl succeeded, bare URL otherwise), quote embeds, canonical farcaster.xyz + Firefly links.
+- **Quotes are pointers, never dropped**: hydrated quote → rishcaster URL (requires the username from the hydrated cast); hydration failure → Firefly full-hash URL (quote embeds carry `{fid, hash}`, no username). HTML's rendering constraints (unguarded `author.pfp.url`) don't apply to JSON — failed hydration degrades to a URL the agent can fetch.
+- **Ban signal**: `signed: false` emits a short note field; unknown/failed check fails open silently (same semantics as the HTML footer link).
+- **Discoverability**: HTML pages emit `<link rel="alternate" type="application/json" href="?format=json">`.
+- **Deferred**: UA-allowlist morphing (GPTBot, ClaudeBot, …) as a later progressive enhancement. Must stay an allowlist — Telegram/Discord/iMessage preview bots must keep receiving HTML + OG meta.
+- No page-level caching today (Shim is the cache); if edge caching is ever added, the variant must join the cache key.
+
 ## Shim → CastData mapping
 
 Shim returns raw Snapchain message data; `toCastData()` in `worker/cast-page.tsx` adapts it for react-farcaster-embed:
 
 - `timestamp` is unix **seconds** → multiplied by 1000 (the embed does `new Date(ts)`)
 - `embeds` are untyped `{url}` / `{castId}` items → bucketed into `images` / `urls` / `casts`; image heuristic = `imagedelivery.net` host or image extension. **Quotes are hydrated** through Shim `GET /h/{fullHash}` (depth 1) and mapped like any cast; hydration failure (e.g. pruned casts) drops the quote. URL embeds render as link cards via `openGraph` (see unfurl above)
-- message-level data has no engagement counts → `replies`/`reactions`/`recasts` stubbed to `{ count: 0 }` and `tags: []` — the embed bundle reads `e.recasts.count` and `e.tags.length` **unguarded** and crashes without them (it also reads `quote.author.pfp.url` unguarded — never emit quotes without hydrated authors)
+- message-level data has no engagement counts → `replies`/`reactions`/`recasts` stubbed to `{ count: 0 }` and `tags: []` — the embed bundle reads `e.recasts.count` and `e.tags.length` **unguarded** and crashes without them (it also reads `quote.author.pfp.url` unguarded — never emit quotes without hydrated authors). The stubs would render as hardcoded zero counters, so the stats row is stripped from the SSR output (`STATS_ROW`); the Farcaster logo in the same container stays
 - `author` mapped from `user` (`pfpUrl` → `pfp.url`, `bio` → `profile.bio.text`)
 
 ## Conventions for agents
