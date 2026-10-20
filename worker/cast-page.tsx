@@ -237,16 +237,104 @@ function shell(
 ${meta}
 <link rel="stylesheet" href="/farcaster-embed.css" />
 <style>
-body { margin: 0; font-family: system-ui, sans-serif; background: #fff; color: #08060d; }
-main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
-.cast-link { display: inline-block; margin-top: 16px; margin-right: 16px; }
+:root {
+  color-scheme: light dark;
+  --bg: #fbfbfa;
+  --ink: #101014;
+  --muted: #77747e;
+  --line: #e8e6e3;
+  --accent: #7f32e3;
+  --accent-soft: #ede7fa;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e0e12;
+    --ink: #f0eff2;
+    --muted: #77747e;
+    --line: #26262c;
+    --accent: #c1b0ff;
+    --accent-soft: #241c38;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.6 system-ui, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.site-header, main, .site-footer {
+  max-width: 672px;
+  margin: 0 auto;
+  padding-inline: 20px;
+}
+.site-header { padding-top: 24px; padding-bottom: 20px; }
+.wordmark {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+}
+.wordmark:hover { color: var(--ink); }
+.wordmark b { color: var(--accent); font-weight: 600; }
+main { padding-bottom: 8px; }
+.notice { color: var(--muted); font-size: 14px; margin: 18px 0 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 0; }
+.pill {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 16px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: border-color 0.15s ease, background-color 0.15s ease,
+    color 0.15s ease;
+}
+.pill:hover, .pill:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: transparent;
+}
+.pill.primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--bg);
+}
+.pill.primary:hover, .pill.primary:focus-visible {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.site-footer {
+  margin-top: 20px;
+  padding-top: 14px;
+  padding-bottom: 32px;
+  border-top: 1px solid var(--line);
+}
+.site-footer a {
+  font-size: 12px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.site-footer a:hover, .site-footer a:focus-visible { color: var(--ink); }
 </style>
 </head>
 <body>
+<header class="site-header">
+  <a class="wordmark" href="/">rishcaster<b>.</b></a>
+</header>
 <main>
 ${bodyHtml}
-<p style="margin-top:24px;font-size:12px;"><a href="https://github.com/artlu99/rishcaster" style="color:#999;text-decoration:none;">source</a></p>
 </main>
+<footer class="site-footer">
+  <a href="https://github.com/artlu99/rishcaster">source</a>
+</footer>
 </body>
 </html>`;
 }
@@ -270,29 +358,31 @@ function castPage(
 	// still renders for everyone.
 	const fcLink =
 		signed === false
-			? `<p>The author hasn't signed the social smart contract — the cast may be restricted on farcaster.xyz.</p>`
-			: `<p><a class="cast-link" href="https://farcaster.xyz/${username}/${hash}">Open on Farcaster: ${username}/${hash}</a></p>`;
+			? `<p class="notice">The author hasn't signed the social smart contract — the cast may be restricted on farcaster.xyz.</p>`
+			: `<p class="actions"><a class="pill primary" href="https://farcaster.xyz/${username}/${hash}">Open on Farcaster</a></p>`;
 	return shell(
-		`${username}/${hash} · trishcaster`,
+		`${username}/${hash} · rishcaster`,
 		`${cardHtml}${fcLink}
-<p><a class="cast-link" href="https://firefly.social/post/farcaster/${fullHash}">Open on Firefly</a></p>`,
+<p class="actions"><a class="pill${signed === false ? " primary" : ""}" href="https://firefly.social/post/farcaster/${fullHash}">Open on Firefly</a></p>`,
 		og,
 	);
 }
 
 function linkOnlyPage(username: string, hash: string): string {
 	return shell(
-		`${username}/${hash} · trishcaster`,
-		`<p>Cast data is temporarily unavailable.</p>
-<p><a class="cast-link" href="https://farcaster.xyz/${username}/${hash}">Open on Farcaster: ${username}/${hash}</a></p>
-<p><a class="cast-link" href="https://firefly.social/post/farcaster/${hash}">Open on Firefly</a></p>`,
+		`${username}/${hash} · rishcaster`,
+		`<p class="notice">Cast data is temporarily unavailable.</p>
+<p class="actions">
+<a class="pill primary" href="https://farcaster.xyz/${username}/${hash}">Open on Farcaster</a>
+<a class="pill" href="https://firefly.social/post/farcaster/${hash}">Open on Firefly</a>
+</p>`,
 	);
 }
 
 function notFoundPage(username: string, hash: string): string {
 	return shell(
-		`${username}/${hash} · trishcaster`,
-		`<p>Cast not found: ${username}/${hash}. The username or hash may be wrong, or the cast was deleted.</p>`,
+		`${username}/${hash} · rishcaster`,
+		`<p class="notice">Cast not found: ${username}/${hash}. The username or hash may be wrong, or the cast was deleted.</p>`,
 	);
 }
 
