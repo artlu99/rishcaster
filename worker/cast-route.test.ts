@@ -45,8 +45,13 @@ const SHIM_CAST = {
 
 const originalFetch = globalThis.fetch;
 
-// decent-artlu's cast: same data, but fid 3319217 has NOT signed.
-const ARTLU_CAST = { ...SHIM_CAST, fid: 3319217 };
+// decent-artlu's cast: same data, but fid 3319217 has NOT signed, and its
+// URL embed has no unfurl mock — hostname fallback must still render.
+const ARTLU_CAST = {
+	...SHIM_CAST,
+	fid: 3319217,
+	embeds: [{ url: "https://example.com/article" }],
+};
 // fid with no /signed mock: its signed-check fetch throws (fail-open path).
 const UNKNOWN_SIGNED_CAST = { ...SHIM_CAST, fid: 7777777 };
 // Regression: the real /zoo/0x79794547 cast — a quote embed + a URL embed.
@@ -74,6 +79,16 @@ beforeEach(() => {
 		}
 		if (url === "https://shim.artlu.xyz/wc/zoo/0x79794547") {
 			return Response.json({ success: true, cast: QUOTE_URL_CAST });
+		}
+		if (
+			url ===
+			`https://unfurl.artlu.workers.dev/?u=${encodeURIComponent("https://newrepublic.com/article/180487/balaji-srinivasan-network-state-plutocrat")}`
+		) {
+			return Response.json({
+				ogTitle: "Balaji and the Network State",
+				ogDescription: "A test description",
+				ogImage: [{ url: "https://img.example.test/cover.jpg" }],
+			});
 		}
 		if (url === "https://shim.artlu.xyz/signed/10215") {
 			return Response.json({ success: true, signed: true });
@@ -131,6 +146,8 @@ test("GET /:username/:hash hides the farcaster link when the author has not sign
 	expect(body).toContain(
 		`https://firefly.social/post/farcaster/${FULL_HASH}`,
 	);
+	// URL embed unfurl failed (no mock) — hostname fallback still renders.
+	expect(body).toContain("example.com");
 	// ...but the farcaster.xyz footer link is suppressed.
 	expect(body).not.toContain("Open on Farcaster");
 	expect(body).not.toContain(
@@ -156,6 +173,9 @@ test("GET /:username/:hash renders quote+url embed casts without crashing", asyn
 	const body = await res.text();
 	expect(body).not.toContain("temporarily unavailable");
 	expect(body).toContain("newrepublic.com");
+	// URL embed enriched via unfurl.
+	expect(body).toContain("Balaji and the Network State");
+	expect(body).toContain("A test description");
 	expect(body).toContain("Open on Farcaster");
 });
 

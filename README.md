@@ -21,6 +21,7 @@ Micro-site that mirrors Farcaster cast URLs for sharing without the Farcaster ap
 | UI (landing) | Preact 11 | SPA assets; entry `src/main.tsx` |
 | Cast pages | Hono on Cloudflare Worker | SSR in `worker/` |
 | Cast data | Shim API | `/wc/{username}/{shortHash}` → full cast; see Mapping below |
+| URL embed cards | unfurl.artlu.workers.dev | `GET /?u={url}` → OG title/description/image (cached, fails open to hostname-only) |
 | Cast embed | react-farcaster-embed | rendering only — `castData` always supplied, never fetches |
 | SSR | preact-render-to-string | after `await FarcasterEmbed({ castData })` |
 | Bundler | Vite 8 | `@preact/preset-vite` + `@cloudflare/vite-plugin` |

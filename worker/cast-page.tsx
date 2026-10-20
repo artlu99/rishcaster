@@ -51,20 +51,52 @@ function urlOpenGraph(url: string): {
 	}
 }
 
-function toCastData(cast: ShimCast): CastData {
+// unfurl.artlu.workers.dev enriches URL embeds with Open Graph data
+// (title/description/image); owner-run, cached, CORS-open. Failures fall
+// back to hostname-only cards.
+type UnfurlResult = {
+	ogTitle?: string;
+	twitterTitle?: string;
+	ogDescription?: string;
+	twitterDescription?: string;
+	ogImage?: Array<{ url?: string } | string>;
+};
+
+async function unfurl(url: string): Promise<UnfurlResult | undefined> {
+	try {
+		const res = await fetch(
+			`https://unfurl.artlu.workers.dev/?u=${encodeURIComponent(url)}`,
+			{ signal: AbortSignal.timeout(5000) },
+		);
+		if (!res.ok) return undefined;
+		return (await res.json().catch(() => undefined)) as
+			| UnfurlResult
+			| undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function toCastData(
+	cast: ShimCast,
+	unfurled?: Map<string, UnfurlResult | undefined>,
+): CastData {
 	const images: Array<{
 		type: string;
 		url: string;
 		sourceUrl: string;
 		alt: string;
 	}> = [];
-	const urls: Array<{ type: string; openGraph: Record<string, string> }> = [];
+	const urls: Array<{ type: string; openGraph: Record<string, string | boolean> }> = [];
 	for (const embed of cast.embeds ?? []) {
 		if (embed.castId?.hash) continue;
 		if (embed.url && isImageUrl(embed.url)) {
 			images.push({ type: "image", url: embed.url, sourceUrl: embed.url, alt: "" });
 		} else if (embed.url) {
-			urls.push({ type: "url", openGraph: urlOpenGraph(embed.url) });
+			urls.push({
+				type: "url",
+				openGraph: openGraphFor(embed.url, unfurled?.get(embed.url)),
+			});
 		}
 	}
 	// The embed bundle reads e.recasts.count and e.tags.length unguarded, and
@@ -85,6 +117,23 @@ function toCastData(cast: ShimCast): CastData {
 		reactions: { count: 0 },
 		recasts: { count: 0 },
 		tags: [],
+	};
+}
+
+function openGraphFor(
+	url: string,
+	data?: UnfurlResult,
+): Record<string, string | boolean> {
+	const title = data?.ogTitle ?? data?.twitterTitle ?? urlOpenGraph(url).title;
+	const description = data?.ogDescription ?? data?.twitterDescription;
+	const first = data?.ogImage?.[0];
+	const image = typeof first === "string" ? first : first?.url;
+	return {
+		url,
+		domain: urlOpenGraph(url).domain,
+		title,
+		...(description ? { description } : {}),
+		...(image ? { image, useLargeImage: true } : {}),
 	};
 }
 
@@ -169,6 +218,16 @@ export async function renderCastPage(
 	}
 
 	if (cast?.hash) {
+		// Enrich up to 3 URL embeds with Open Graph data (fails open).
+		const urlEmbeds = Array.from(
+			new Set(
+				(cast.embeds ?? [])
+					.map((embed) => embed.url)
+					.filter((u): u is string => typeof u === "string" && !isImageUrl(u)),
+			),
+		).slice(0, 3);
+		const unfurls = Promise.allSettled(urlEmbeds.map((u) => unfurl(u)));
+
 		// Has the author signed the social smart contract? Unknown (null)
 		// fails open: the farcaster.xyz link is shown unless Shim says no.
 		let signed: boolean | null = null;
@@ -186,12 +245,19 @@ export async function renderCastPage(
 				// Signed-check unavailable — fail open.
 			}
 		}
+
+		const unfurlResults = await unfurls;
+		const unfurlMap = new Map<string, UnfurlResult | undefined>();
+		urlEmbeds.forEach((u, i) => {
+			const r = unfurlResults[i];
+			unfurlMap.set(u, r.status === "fulfilled" ? r.value : undefined);
+		});
 		try {
 			const cardHtml = renderToString(
 				(await FarcasterEmbed({
 					username,
 					hash,
-					castData: toCastData(cast),
+					castData: toCastData(cast, unfurlMap),
 				})) as never,
 			);
 			return {
